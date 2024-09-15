@@ -24,5 +24,6 @@ pub fn build_handler() -> Handler<'static, DependencyMap, Result<(), RequestErro
         .branch(
             Update::filter_callback_query()
                 .endpoint(handle_callback_query)
+
         )
 }

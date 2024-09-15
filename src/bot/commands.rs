@@ -50,12 +50,8 @@ impl CallbackQueryCommand {
         let cmd = s.split_once(':')?;
 
         let (cmd, id) = cmd;
-        let id = if let Ok(id) = id.parse::<i32>() {
-            MessageId(id)
-        } else {
-            return None
-        };
 
+        let id = MessageId(id.parse().ok()?);
         match cmd {
             "del" => Some(Delete(id)),
             "edit" => Some(Edit(id)) ,

@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 use teloxide::prelude::*;
-use teloxide::RequestError;
+use teloxide::{ApiError, RequestError};
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, Me, MessageId, ParseMode, User};
 use crate::bot::make_callback_kb;
 use crate::site::form::Form;
@@ -11,18 +11,20 @@ pub async fn handle_shit(
     app_config: &AppConfig,
     form: Form,
     user: &User,
-) -> Result<(), RequestError> {
+) -> Result<MessageId, RequestError> {
     let group_id = ChatId(app_config.group_id.load(Ordering::Relaxed));
 
     // todo move check earlier
     if !is_member(&app_config.bot, group_id, user.id).await? {
         println!("ha some looser tried to post without being part of the group");
-        return Ok(()); // todo return some kind of Err
+        return Err(RequestError::Api(ApiError::NotEnoughRightsToPostMessages)); // todo return some kind of Err
     }
 
     let group_msg = post_ad(app_config, &form, user).await?;
 
-    report_ad(user, group_id, group_msg, app_config).await.map(|_| ())
+    report_ad(user, group_id, &group_msg, app_config).await?;
+
+    Ok(group_msg.id)
 }
 
 async fn is_member(
@@ -59,7 +61,7 @@ async fn post_ad(
 async fn report_ad(
     user: &User,
     group_id: ChatId,
-    msg: Message,
+    msg: &Message,
     app_config: &AppConfig,
 ) -> Result<(), RequestError> {
     use crate::bot::commands::CallbackQueryCommand::*;
@@ -67,23 +69,14 @@ async fn report_ad(
 
     let butts = vec![
         vec![
-            ("Редактировать ✏️".into(), Edit { ad_id: msg.id, fwd_id: MessageId(0) }),
+            ("Редактировать ✏️".into(), Edit(msg.id)),
             ("Снять 🗑️".into(), Delete(msg.id)),
         ],
-        // vec![
-        //     ("Опубликовать заново ↪️".into(), Repost{ ad_id: msg.id, fwd_id: MessageId::default() }),
-        // ]
     ];
-
-    // bot.send_message(user.id, "Ваше объявление опубликовано, вы можете видеть его выше.")
-    //     .reply_markup(make_callback_kb(butts))
-    //     .await?;
 
     bot.copy_message(user.id, group_id, msg.id)
         .reply_markup(make_callback_kb(butts))
-        .await.map(|_|())
-    // bot.forward_message(user.id, group_id, msg.id)
-    //     .await
+        .await.map(|_| ())
 }
 
 fn make_ad_kb(user_id: &UserId) -> InlineKeyboardMarkup {

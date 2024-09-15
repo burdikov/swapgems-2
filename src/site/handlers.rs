@@ -16,7 +16,7 @@ use crate::site::init_data::Error;
 pub async fn handle_posting(
     headers: HeaderMap,
     State(app_config): State<Arc<AppConfig>>,
-    RawForm(bytes): RawForm,
+    bytes: axum::body::Bytes,
 ) -> impl IntoResponse {
     let mut resp_headers = HeaderMap::new();
     add_access_control_headers(&mut resp_headers, &app_config.app_url);
@@ -64,7 +64,7 @@ pub async fn handle_posting(
 
     let form_data = form_data.unwrap();
 
-    tg::handle_shit(
+    let id = tg::handle_shit(
         app_config.borrow(),
         form_data,
         &user
@@ -76,7 +76,7 @@ pub async fn handle_posting(
     (
         StatusCode::OK,
         resp_headers,
-        String::default(),
+        id.to_string(),
     )
 }
 

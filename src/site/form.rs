@@ -154,7 +154,7 @@ impl Form {
             bos = if self.buying { "Куплю" } else { "Продам" },
             sum = self.sum,
             curr1 = if self.buying { &self.buying_cur } else { &self.selling_cur },
-            curr2 = if !self.buying { &self.selling_cur } else { &self.buying_cur },
+            curr2 = if self.buying { &self.selling_cur } else { &self.buying_cur },
         )
     }
 }

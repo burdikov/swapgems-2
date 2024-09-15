@@ -9,12 +9,18 @@ use teloxide::types::{ChatKind, InlineKeyboardButton, InlineKeyboardMarkup, Keyb
 use teloxide::utils::command::BotCommands;
 use teloxide::payloads::AnswerCallbackQuerySetters;
 use teloxide::dispatching::dialogue::GetChatId;
+use teloxide::payloads::EditMessageTextSetters;
 
 use super::commands::*;
 use super::TARGET_GROUP_ID_KEY;
 use crate::types::AppConfig;
 
-pub async fn handle_added_to_group(bot: Bot, config: Arc<AppConfig>, message: Message) -> Result<(), RequestError> {
+pub async fn handle_added_to_group(
+    bot: Bot,
+    config: Arc<AppConfig>,
+    message: Message
+)  -> Result<(), RequestError>
+{
     let grp_title = match message.chat.kind {
         ChatKind::Public(chat) => { chat.title }
         ChatKind::Private(_) => None
@@ -42,12 +48,13 @@ pub async fn handle_callback_query(
     config: Arc<AppConfig>,
 ) -> Result<(), RequestError> {
     if let Some(ref data) = callback_query.data {
+        use CallbackQueryCommand::{Delete, Edit, Repost};
         let cmd = CallbackQueryCommand::parse(data);
         if cmd.is_none() { todo!("return some kinda error") }
 
         let group_id = ChatId(config.group_id.load(Ordering::Relaxed));
         match cmd.unwrap() {
-            CallbackQueryCommand::Delete(msg_id) => {
+            Delete(msg_id) => {
                 let res = bot.delete_message(group_id, msg_id).await;
 
                 if res.is_err() {
@@ -59,13 +66,23 @@ pub async fn handle_callback_query(
                 // assuming some filtering has been done previously
                 let msg = callback_query.regular_message().unwrap();
                 let chat_id = callback_query.chat_id().unwrap();
-                let new_text = "Вы сняли своё объявление.".to_string();
-                bot.edit_message_text(chat_id, msg.id, new_text).await?;
+                let new_text = format!("{}\n\nВы сняли это объявление.",
+                                       msg.text().unwrap_or_default());
+                bot.edit_message_text(chat_id, msg.id, new_text)
+                    .parse_mode(ParseMode::Html)
+                    .await?;
             }
-            CallbackQueryCommand::Edit{ad_id, .. } => {
-                bot.edit_message_text(group_id, ad_id, "kekw").await?;
+            Edit(id) => {
+                // открыть форму с двумя параметрами: айди сообщения в группе и айди сообщения в чате
+                // желательно зашифрованными
+
+                // юзер делает изменения в форме и отправляет
+
+                // здесь больше нечего делать
+                // этой ветки вообще не существует
+                bot.edit_message_text(group_id, id, "kekw").await?;
             }
-            CallbackQueryCommand::Repost{..} => {}
+            Repost(_) => {}
         }
     }
 
