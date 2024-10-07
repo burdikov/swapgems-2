@@ -1,5 +1,4 @@
 use std::fmt::{Display, Formatter};
-use std::ptr::write;
 use teloxide::macros::BotCommands;
 use teloxide::types::MessageId;
 use crate::bot::commands::CallbackQueryCommand::{Delete, Edit, Repost};
@@ -9,12 +8,18 @@ use crate::bot::commands::CallbackQueryCommand::{Delete, Edit, Repost};
 pub enum SimpleCommand {
     /// Начало работы
     Start,
-    /// Эта подсказка
+    /// Узнать количество ваших ⭐️
+    MyStars,
+    /// Описание бота
     Help,
-    /// Узнать свой UserId
-    MyId,
-    /// Узнать UserId хозяина бота
-    Maintainer,
+    /// О публикации объявлений
+    Posting,
+    /// О звёздах
+    Stars,
+    /// О безопасности сделок
+    Safety,
+    /// О хранимых данных
+    PersonalData
 }
 
 #[derive(BotCommands, Clone, Debug)]

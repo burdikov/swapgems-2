@@ -1,82 +1,85 @@
-use std::sync::Arc;
-use axum::extract::{RawForm, State};
+use super::init_data;
+use super::tg;
+use crate::site::form::Form;
+use crate::types::{AppConfig, SwappyUser, ToSwappyUser};
+use axum::extract::{Query, State};
 use axum::http;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
+use std::borrow::Borrow;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use serde::Deserialize;
+use teloxide::{ApiError, RequestError};
+use teloxide::types::ChatId;
 use tokio::time::Instant;
 use url::Url;
-use super::tg;
-use crate::types::AppConfig;
-use super::init_data;
-use std::borrow::Borrow;
-use teloxide::types::User;
-use crate::site::form::{Form, FormParseError};
+use init_data::validate;
 use crate::site::init_data::Error;
+use crate::types::swappy_bot::ToSwappyBot;
+
+#[derive(Deserialize, Debug)]
+pub struct PostParams {
+    pub edit_id: Option<i32>,
+    pub report_id: Option<i32>,
+    pub keeping: bool,
+}
 
 pub async fn handle_posting(
     headers: HeaderMap,
     State(app_config): State<Arc<AppConfig>>,
+    query: Query<PostParams>,
     bytes: axum::body::Bytes,
 ) -> impl IntoResponse {
+    let now = Instant::now();
+
     let mut resp_headers = HeaderMap::new();
     add_access_control_headers(&mut resp_headers, &app_config.app_url);
 
-    let user;
-    let now = Instant::now();
-    if let Some(data) = headers.get("X-Telegram-Init-Data") {
-        user = match init_data::validate(data.as_bytes(), app_config.bot_token.as_bytes(), false) {
-            Ok(u) => u,
-            Err(e) => {
-                println!("Some shit with init data: {e:?}");
-                return (
-                    StatusCode::BAD_REQUEST,
-                    resp_headers,
-                    String::default(),
-                );
-            }
-        }
-    } else {
-        return (
-            StatusCode::BAD_REQUEST,
-            resp_headers,
-            String::default(),
-        );
-    }
+    // validate init data
+    let data = if let Some(data) = headers.get("X-Telegram-Init-Data") { data.as_bytes() } else {
+        return (StatusCode::UNAUTHORIZED, resp_headers, String::default())
+    };
 
-    let elapsed = now.elapsed();
-    println!("Validating init data took {}ns", elapsed.as_nanos());
-
-    let form_data = Form::try_from(bytes.borrow());
-    println!("{form_data:?}");
-    if let Err(e) = form_data {
-        let msg = if let FormParseError::Invalid(s) = e {
-            s.to_string()
+    let tg_user =
+        if let Some(user) = validate(data, app_config.bot_token.as_bytes(), false).ok() {
+            user
         } else {
-            "Что-то пошло не так".to_string()
+            return (StatusCode::UNAUTHORIZED, resp_headers, String::default())
         };
 
-        return (
-            StatusCode::BAD_REQUEST,
-            resp_headers,
-            msg,
-        );
+    // check if user is a part of the group
+    let sw_user = tg_user.with_config(&app_config).await;
+    match sw_user.is_group_member().await {
+        Ok(true) => {} // continue
+        Ok(false) => return (StatusCode::FORBIDDEN, resp_headers, String::default()),
+        Err(e) => {
+            log::error!("member check failed: {}", e.to_string());
+            return (StatusCode::INTERNAL_SERVER_ERROR, resp_headers, "Try later".to_string())
+        }
     }
 
+    // parse form
+    let form_data: serde_json::Result<Form> = serde_json::from_slice(&bytes);
+    if form_data.is_err() {
+        return (StatusCode::BAD_REQUEST, resp_headers, "Form error".to_string())
+    }
     let form_data = form_data.unwrap();
 
-    let id = tg::handle_shit(
+    let (msg_id, report_id) = tg::handle_shit(
         app_config.borrow(),
+        query.0,
         form_data,
-        &user
+        sw_user,
     ).await.expect("TODO: panic message");
 
     let elapsed = now.elapsed();
-    println!("Handling shit took {}ns", elapsed.as_nanos());
+    println!("request took {}microsecs", elapsed.as_micros());
 
     (
         StatusCode::OK,
         resp_headers,
-        id.to_string(),
+        format!("{},{}", msg_id, report_id),
     )
 }
 

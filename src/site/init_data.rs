@@ -12,6 +12,7 @@ use teloxide::types::{
 #[derive(Debug, PartialEq)]
 pub enum Error {
     BadData(serde_urlencoded::de::Error),
+    BadArgs,
     TooOld,
     HashMismatch,
     /// Returned if bot api contracts are violated
@@ -24,6 +25,8 @@ pub enum Error {
 /// TooOld if token is older than 30 minutes
 pub fn validate(data: &[u8], token: &[u8], ignore_age: bool) -> Result<User, Error> {
     use Error::*;
+
+    if data.len() == 0 || token.len() == 0 { return Err(BadArgs) }
 
     // parse init_data into fields
     let mut pairs: HashMap<String, String> =

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use teloxide::prelude::Message;
-use teloxide::types::Me;
+use teloxide::types::{Me, MessageKind};
 use crate::types::AppConfig;
 
 pub fn me_added_to_group(message: Message, me: Me) -> bool {
@@ -15,4 +15,8 @@ pub fn me_added_to_group(message: Message, me: Me) -> bool {
 
 pub fn msg_from_maintainer(config: Arc<AppConfig>, message: Message) -> bool {
     message.from.map(|user| user.id == config.bot_maintainer).unwrap_or_default()
+}
+
+pub fn has_shared_users(message: Message) -> bool {
+    if let MessageKind::UsersShared(_) = message.kind { true } else { false }
 }

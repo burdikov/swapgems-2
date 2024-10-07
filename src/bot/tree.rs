@@ -20,10 +20,11 @@ pub fn build_handler() -> Handler<'static, DependencyMap, Result<(), RequestErro
                     .endpoint(handle_maintainer_command))
                 .branch(dptree::filter(me_added_to_group)
                     .endpoint(handle_added_to_group))
+                .branch(dptree::filter(has_shared_users).endpoint(handle_shared_users))
+
         )
         .branch(
             Update::filter_callback_query()
                 .endpoint(handle_callback_query)
-
         )
 }

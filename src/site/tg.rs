@@ -1,82 +1,131 @@
-use std::sync::atomic::Ordering;
-use teloxide::prelude::*;
-use teloxide::{ApiError, RequestError};
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, Me, MessageId, ParseMode, User};
-use crate::bot::make_callback_kb;
+use std::fmt::format;
 use crate::site::form::Form;
-use crate::types::AppConfig;
-
+use crate::types::{AppConfig, SwappyUser};
+use std::sync::atomic::Ordering;
+use axum::http::StatusCode;
+use redis::{Commands, RedisError};
+use teloxide::prelude::*;
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode, User, WebAppInfo};
+use teloxide::RequestError;
+use crate::site::handlers::PostParams;
+use crate::store::get_star_count;
+use crate::types::swappy_bot::ToSwappyBot;
 
 pub async fn handle_shit(
     app_config: &AppConfig,
+    post_params: PostParams,
     form: Form,
-    user: &User,
-) -> Result<MessageId, RequestError> {
-    let group_id = ChatId(app_config.group_id.load(Ordering::Relaxed));
-
-    // todo move check earlier
-    if !is_member(&app_config.bot, group_id, user.id).await? {
-        println!("ha some looser tried to post without being part of the group");
-        return Err(RequestError::Api(ApiError::NotEnoughRightsToPostMessages)); // todo return some kind of Err
+    mut sw_user: SwappyUser<'_>,
+) -> Result<(MessageId, MessageId), (StatusCode, String)> {
+    let mut delete_old_report = false;
+    if let Some(edit_id) = post_params.edit_id {
+        let edit_id = MessageId(edit_id);
+        match sw_user.is_author(edit_id).await {
+            Ok(true) => {
+                delete_old_report = true;
+            }
+            Ok(false) => {
+                return Err((StatusCode::FORBIDDEN, "Редактируемое сообщение не ваше".to_string()));
+            }
+            Err(e) => {
+                log::error!("redis query failed: {}", e.to_string());
+                return Err((StatusCode::INTERNAL_SERVER_ERROR,
+                            "Что-то пошло не так, попробуйте позднее".to_string()));
+            }
+        }
     }
 
-    let group_msg = post_ad(app_config, &form, user).await?;
 
-    report_ad(user, group_id, &group_msg, app_config).await?;
+    // let sw_bot = app_config.bot.clone().to_swappy_bot(app_config.group_id());
 
-    Ok(group_msg.id)
-}
+    let group_msg = post_ad(
+        post_params.edit_id,
+        &app_config.bot,
+        &form,
+        &mut sw_user,
+    ).await.map_err(|e| {
+        log::error!("failed to post ad: {}", e.to_string());
+        (StatusCode::INTERNAL_SERVER_ERROR, "Try later".to_string())
+    })?;
 
-async fn is_member(
-    bot: &Bot,
-    group_id: ChatId,
-    user_id: UserId,
-) -> Result<bool, RequestError> {
-    let chat_member = bot.get_chat_member(group_id, user_id).await?;
+    sw_user.set_author(group_msg.id).await.expect("kk");
 
-    Ok(chat_member.is_present())
+    if delete_old_report {
+        if let Err(e) = app_config.bot.delete_message(
+            sw_user.tg_user.id, MessageId(post_params.report_id.unwrap_or_default()))
+            .await {
+            log::error!("failed to delete old report: {}", e.to_string());
+        }
+    }
+
+    let report_id = report_ad(&sw_user.tg_user, sw_user.group_id, &group_msg, post_params, app_config).await
+        .map_err(|e| {
+            // if let Err(e) = app_config.bot.delete_message(group_id, group_msg.id).await {
+            //     log::error!("failed to cleanup ad after failing to send report: {}", e.to_string());
+            // };
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+
+    Ok((group_msg.id, report_id))
 }
 
 async fn post_ad(
-    app_config: &AppConfig,
+    edit_msg_id: Option<i32>,
+    bot: &Bot,
     form: &Form,
-    user: &User,
+    bot_user: &mut SwappyUser<'_>,
 ) -> Result<Message, RequestError> {
-    let bot = &app_config.bot;
+    let group_id = bot_user.group_id;
+    let sc = bot_user.star_count().await.unwrap_or_default();
+    let stars = if sc > 0 { format!(" (<i>⭐️</i>{})", sc) } else { String::default() };
 
     let msg = format!(
-        "<a href=\"{}\">{}</a> (⭐️14):\n\n{}",
-        user.url(),
-        user.full_name().trim(),
+        "{}{}:\n\n{}",
+        bot_user,
+        stars,
         form,
     );
 
-    let group_id = ChatId(app_config.group_id.load(Ordering::Relaxed));
-    bot.send_message(group_id, msg)
-        // .reply_markup(make_ad_kb(&user.id))
-        .parse_mode(ParseMode::Html)
-        .await
+    if let Some(msg_id) = edit_msg_id {
+        bot.edit_message_text(group_id, MessageId(msg_id), msg)
+            .parse_mode(ParseMode::Html)
+            .await
+    } else {
+        bot.send_message(group_id, msg)
+            .parse_mode(ParseMode::Html)
+            .await
+    }
 }
 
 async fn report_ad(
     user: &User,
     group_id: ChatId,
     msg: &Message,
+    post_params: PostParams,
     app_config: &AppConfig,
-) -> Result<(), RequestError> {
+) -> Result<MessageId, RequestError> {
     use crate::bot::commands::CallbackQueryCommand::*;
     let bot = &app_config.bot;
 
-    let butts = vec![
+    let mut edit_url = app_config.app_url.clone();
+    // edit_url.set_path("/form");
+    let query = format!("edit={}", msg.id.to_string());
+    edit_url.set_query(Some(&query));
+
+    let mut butts = vec![
         vec![
-            ("Редактировать ✏️".into(), Edit(msg.id)),
-            ("Снять 🗑️".into(), Delete(msg.id)),
+            InlineKeyboardButton::callback("Снять 🗑️".to_string(), Delete(msg.id).to_string()),
         ],
     ];
+    if post_params.keeping {
+        butts[0].insert(0,
+            InlineKeyboardButton::web_app("Редактировать ✏️".to_string(), WebAppInfo { url: edit_url }),
+        );
+    }
 
     bot.copy_message(user.id, group_id, msg.id)
-        .reply_markup(make_callback_kb(butts))
-        .await.map(|_| ())
+        .reply_markup(InlineKeyboardMarkup::new(butts))
+        .await
 }
 
 fn make_ad_kb(user_id: &UserId) -> InlineKeyboardMarkup {
